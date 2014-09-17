@@ -1,0 +1,121 @@
+heat_template_version: 2013-05-23
+
+description: >
+  A Heat template which deployed a HA Autoscaling Group.
+
+parameters:
+  key_name:
+    type: string
+    description: Name of an existing key pair to use for the instance
+  flavor:
+    type: string
+    description: flavor for the instance to be created
+    default: m1.medium
+    constraints:
+      - allowed_values: [m1.medium, m1.large]
+        description: Value must be one of 'm1.medium' or 'm1.large'
+  image:
+    type: string
+    description: Name of the image to use for the instance
+    default: Centos65
+    constraints:
+    - allowed_values: [ Centos65 ]
+  availability_zone:
+    type: string 
+    description: The Availability Zone in which to launch the instance.
+  network_id:
+    type: string
+    description: ID of network into which servers get deployed
+  subnet_id:
+    type: string
+    description: ID of network subnet into which servers get deployed
+  security_group_id:
+    type: string
+    description: ID of security group for this instance port
+
+resources:
+
+  web_server_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      desired_capacity: 2
+      min_size: 1
+      max_size: 3
+      resource:
+        type: lb_server.yaml
+        properties:
+          flavor: {get_param: flavor}
+          image: {get_param: image}
+          key_name: {get_param: key_name}
+          network_id: {get_param: network_id}
+          subnet_id: {get_param: subnet_id}
+          security_group_id: {get_param: security_group_id}
+          availability_zone: { get_param: availability_zone }
+          metadata: {'groupname': 'web_server_group'}
+          pool_id: {get_resource: pool}      
+                             
+  web_server_scaleup_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: web_server_group}
+      cooldown: 60
+      scaling_adjustment: 1
+  web_server_scaledown_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: web_server_group}
+      cooldown: 60
+      scaling_adjustment: -1
+  cpu_alarm_high:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-up if the max CPU > 50% for 1 minute
+      meter_name: cpu_util
+      statistic: avg
+      period: 60
+      evaluation_periods: 1
+      threshold: 50
+      alarm_actions:
+        - {get_attr: [web_server_scaleup_policy, alarm_url]}
+      matching_metadata: { 'metadata.user_metadata.groupname': 'web_server_group'}
+      comparison_operator: gt
+      repeat_actions: true
+  cpu_alarm_low:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-down if the min CPU < 15% for 5 minutes
+      meter_name: cpu_util
+      statistic: avg
+      period: 60
+      evaluation_periods: 1
+      threshold: 15
+      alarm_actions:
+        - {get_attr: [web_server_scaledown_policy, alarm_url]}
+      matching_metadata: { 'metadata.user_metadata.groupname': 'web_server_group'}
+      comparison_operator: lt
+  monitor:
+    type: OS::Neutron::HealthMonitor
+    properties:
+      type: TCP
+      delay: 3
+      max_retries: 5
+      timeout: 5
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      monitors: [{get_resource: monitor}]
+      subnet_id: {get_param: subnet_id}
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 80
+  lb:
+    type: OS::Neutron::LoadBalancer
+    properties:
+      protocol_port: 80
+      pool_id: {get_resource: pool}
+      
+      
+ 
