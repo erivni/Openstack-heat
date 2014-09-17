@@ -1,0 +1,162 @@
+heat_template_version: 2013-05-23
+description: A load-balancer server
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+  key_name:
+    type: string
+    description: SSH key to connect to the servers
+  flavor:
+    type: string
+    description: flavor used by the servers
+  metadata:
+    type: json
+  network_id:
+    type: string
+    description: ID of network into which servers get deployed
+  subnet_id:
+    type: string
+    description: ID of network subnet into which servers get deployed
+  security_group_id:
+    type: string
+    description: ID of security group for this instance port
+  availability_zone:
+    type: string
+    description: The Availability Zone in which to launch the instance.
+  pool_id:
+    type: string
+    description: Pool ID
+
+resources:
+
+  server:
+    type: OS::Nova::Server
+    metadata:
+      AWS::CloudFormation::Init:
+          config:
+           files:
+              "/etc/cfn/cfn-credentials":
+                content : 
+                  str_replace:
+                    template: |
+                      AWSAccessKeyId=$AWSAccessKeyId
+                      AWSSecretKey=$AWSSecretKey
+                    params:
+                      $AWSAccessKeyId: { "Ref" : "web_server_keys" }
+                      $AWSSecretKey: { get_attr: ["web_server_keys","SecretAccessKey"]}   
+                mode: "000400"
+                owner: root
+                group: root
+              "/etc/cfn/cfn-hup.conf":
+                content:
+                  str_replace:
+                    template: |
+                      [main]
+                      stack=$StackName
+                      credential-file=/etc/cfn/cfn-credentials
+                      region=$REGION
+                      interval=1
+                    params:
+                      $STACKNAME: { get_param: "OS::stack_name" }
+                      $REGION: "ap-southeast-1" 
+                mode: "000400"
+                owner: root
+                group: root
+              "/tmp/cfn-hup-crontab.txt":
+                content:
+                  str_replace:
+                    template: |
+                      MAIL=""
+                      
+                      * * * * * /opt/aws/bin/cfn-hup -f
+                      * * * * * /opt/aws/bin/cfn-push-stats --watch $HeartbeatFailureAlarm --heartbeat
+                    params:
+                      $HeartbeatFailureAlarm : { "Ref" : "heartbeat_failure_alarm" }
+                mode: "000600"
+                owner: root
+                group: root 
+    properties:
+      name: Test-Restart
+      flavor: {get_param: flavor}
+      image: {get_param: image}
+      key_name: {get_param: key_name}
+      availability_zone: { get_param: availability_zone }
+      networks:
+        - network: { get_param: network_id }
+      security_groups: [{ get_param: security_group_id }]
+      metadata: { get_param: metadata}
+      user_data: 
+        str_replace:
+          template: | 
+            #!/bin/bash -x
+			
+            yum -y install heat-cfntools
+            
+            cfn-create-aws-symlinks
+            
+            
+            # Helper function for HARestarter with AWS
+            function error_exit {
+            /opt/aws/bin/cfn-signal -e 1 -r "$1" "$WaitHandle"
+            exit 1
+            }
+            
+            /opt/aws/bin/cfn-init -s $STACKNAME -r server --region $REGION || error_exit 'Failed to run cfn-init'
+            
+            #--------
+            echo "hello, world!"
+            
+            # install cfn-hup crontab
+            crontab /tmp/cfn-hup-crontab.txt
+            
+            # All is well so signal success
+            /opt/aws/bin/cfn-signal -e 0 -r "Wiki server setup complete" '$WaitHandle'
+                        
+          params: 
+            $STACKNAME: { get_param: "OS::stack_name" }
+            $REGION: "ap-southeast-1" 
+            $WaitHandle: { "Ref" : "wait_handle" }
+            
+  cfn_user:
+    type : AWS::IAM::User
+  web_server_keys : 
+    type : AWS::IAM::AccessKey
+    properties : 
+      UserName : {"Ref": "cfn_user"}
+
+  server_restart_policy:
+      type : OS::Heat::HARestarter
+      properties : 
+        InstanceId : { "Ref" : "server" }
+
+  heartbeat_failure_alarm: 
+    type: OS::Heat::CWLiteAlarm
+    depends_on : [ wait_condition ]
+    properties:
+      AlarmDescription: Restart the server if we miss a heartbeat
+      MetricName: Heartbeat
+      Namespace: system/linux
+      Statistic: SampleCount
+      Period: "60"
+      EvaluationPeriods: "1"
+      Threshold: "1"
+      AlarmActions: [ { "Ref": "server_restart_policy" } ]
+      ComparisonOperator: LessThanThreshold
+   
+  wait_handle: 
+    type: AWS::CloudFormation::WaitConditionHandle
+
+  wait_condition: 
+    type: AWS::CloudFormation::WaitCondition
+    depends_on: [ server ]
+    properties: 
+      Handle: { "Ref" : "wait_handle" }
+      Timeout: 600     
+      
+  member:
+    type: OS::Neutron::PoolMember
+    properties:
+      pool_id: {get_param: pool_id}
+      address: {get_attr: [server, first_address]}
+      protocol_port: 80 
