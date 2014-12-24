@@ -1,0 +1,18 @@
+heat_template_version: 2013-05-23
+description: >
+  Simple template to deploy random string
+
+resources:
+  server_string:
+    type: OS::Heat::RandomString
+    properties:
+      length: 4
+  
+  resource:
+    type: nested_random_string.yaml
+    properties:
+       test: "hello"
+
+outputs:
+    output_nested:
+      value: <nested_stack_outputs>
