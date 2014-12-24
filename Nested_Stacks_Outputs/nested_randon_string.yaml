@@ -1,0 +1,11 @@
+heat_template_version: 2013-05-23
+description: >
+  Simple template to deploy nested stack
+resources:
+  server_string:
+    type: OS::Heat::RandomString
+    properties:
+      length: 4
+outputs:
+  test_out:
+    value: "out_nested"
